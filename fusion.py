@@ -47,6 +47,11 @@ class TSDFVolume:
     )
     self._vox_coords = torch.stack([xv.flatten(), yv.flatten(), zv.flatten()], dim=1).long().to(self.device)
 
+    # Convert voxel coordinates to world coordinates
+    self._world_c = self._vol_origin + (self._voxel_size * self._vox_coords)
+    self._world_c = torch.cat([
+      self._world_c, torch.ones(len(self._world_c), 1).to(self.device)], dim=1).double()
+
     self.reset()
 
     print("[*] voxel volume: {} x {} x {}".format(*self._vol_dim))
@@ -77,12 +82,8 @@ class TSDFVolume:
 
     world2cam = torch.from_numpy(np.linalg.inv(cam_pose)).to(self.device)
 
-    # Convert voxel coordinates to world coordinates
-    world_c = self._vol_origin + (self._voxel_size * self._vox_coords)
-
     # Convert world coordinates to camera coordinates
-    world_c = torch.cat([world_c, torch.ones(len(world_c), 1)], dim=1).double()
-    cam_c = torch.matmul(world2cam, world_c.T).T.float()
+    cam_c = torch.matmul(world2cam, self._world_c.T).T.float()
 
     # Convert camera coordinates to pixel coordinates
     fx, fy = cam_intr[0, 0], cam_intr[1, 1]
@@ -137,7 +138,7 @@ class TSDFVolume:
     color_vol = self._color_vol.cpu().numpy()
     vol_origin = self._vol_origin.cpu().numpy()
 
-    # Marchiing cubes
+    # Marching cubes
     verts, faces, norms, vals = measure.marching_cubes_lewiner(tsdf_vol, level=0)
     verts_ind = np.round(verts).astype(int)
     verts = verts*self._voxel_size + vol_origin
