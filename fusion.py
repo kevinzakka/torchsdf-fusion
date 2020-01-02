@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from skimage import measure
+from ipdb import set_trace
 
 
 class TSDFVolume:
@@ -50,7 +51,7 @@ class TSDFVolume:
     # Convert voxel coordinates to world coordinates
     self._world_c = self._vol_origin + (self._voxel_size * self._vox_coords)
     self._world_c = torch.cat([
-      self._world_c, torch.ones(len(self._world_c), 1).to(self.device)], dim=1).double()
+      self._world_c, torch.ones(len(self._world_c), 1, device=self.device)], dim=1).double()
 
     self.reset()
 
@@ -72,17 +73,16 @@ class TSDFVolume:
       cam_pose (ndarray): The camera pose (i.e. extrinsics) of shape (4, 4).
       obs_weight (float): The weight to assign to the current observation.
     """
+    cam_intr = torch.from_numpy(cam_intr).float().to(self.device)
     color_im = torch.from_numpy(color_im).float().to(self.device)
     depth_im = torch.from_numpy(depth_im).float().to(self.device)
-
     im_h, im_w = depth_im.shape
 
     # Fold RGB color image into a single channel image
     color_im = torch.floor(color_im[..., 2]*self._const + color_im[..., 1]*256 + color_im[..., 0])
 
-    world2cam = torch.from_numpy(np.linalg.inv(cam_pose)).to(self.device)
-
     # Convert world coordinates to camera coordinates
+    world2cam = torch.from_numpy(np.linalg.inv(cam_pose)).to(self.device)
     cam_c = torch.matmul(world2cam, self._world_c.T).T.float()
 
     # Convert camera coordinates to pixel coordinates
@@ -94,22 +94,27 @@ class TSDFVolume:
 
     # Eliminate pixels outside view frustum
     valid_pix = (pix_x >= 0) & (pix_x < im_w) & (pix_y >= 0) & (pix_y < im_h) & (pix_z > 0)
-    depth_val = torch.zeros(pix_x.shape).to(self.device)
-    depth_val[valid_pix] = depth_im[pix_y[valid_pix], pix_x[valid_pix]]
+    valid_vox_x = self._vox_coords[valid_pix, 0]
+    valid_vox_y = self._vox_coords[valid_pix, 1]
+    valid_vox_z = self._vox_coords[valid_pix, 2]
+    valid_pix_y = pix_y[valid_pix]
+    valid_pix_x = pix_x[valid_pix]
+    depth_val = depth_im[pix_y[valid_pix], pix_x[valid_pix]]
 
     # Integrate tsdf
-    depth_diff = depth_val - pix_z
+    depth_diff = depth_val - pix_z[valid_pix]
+    dist = torch.min(torch.ones_like(depth_diff, device=self.device), depth_diff / self._sdf_trunc)
     valid_pts = (depth_val > 0) & (depth_diff >= -self._sdf_trunc)
-    dist = torch.min(torch.ones_like(depth_diff).to(self.device), depth_diff / self._sdf_trunc)
-    valid_vox_x = self._vox_coords[valid_pts, 0]
-    valid_vox_y = self._vox_coords[valid_pts, 1]
-    valid_vox_z = self._vox_coords[valid_pts, 2]
+    valid_vox_x = valid_vox_x[valid_pts]
+    valid_vox_y = valid_vox_y[valid_pts]
+    valid_vox_z = valid_vox_z[valid_pts]
+    valid_pix_y = valid_pix_y[valid_pts]
+    valid_pix_x = valid_pix_x[valid_pts]
+    valid_dist = dist[valid_pts]
     w_old = self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z]
     tsdf_vals = self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z]
-    valid_dist = dist[valid_pts]
     w_new = w_old + obs_weight
-    tsdf_vol_new = (w_old * tsdf_vals + valid_dist) / w_new
-    self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = tsdf_vol_new
+    self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = (w_old * tsdf_vals + valid_dist) / w_new
     self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z] = w_new
 
     # Integrate color
@@ -117,7 +122,7 @@ class TSDFVolume:
     old_b = torch.floor(old_color / self._const)
     old_g = torch.floor((old_color-old_b*self._const) / 256)
     old_r = old_color - old_b*self._const - old_g*256
-    new_color = color_im[pix_y[valid_pts],pix_x[valid_pts]]
+    new_color = color_im[valid_pix_y, valid_pix_x]
     new_b = torch.floor(new_color / self._const)
     new_g = torch.floor((new_color - new_b*self._const) / 256)
     new_r = new_color - new_b*self._const - new_g*256
