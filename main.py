@@ -8,6 +8,9 @@ import numpy as np
 
 import fusion
 
+# import os
+# os.environ['KMP_DUPLICATE_LIB_OK']='True'
+
 
 if __name__ == "__main__":
   # ======================================================================================================== #
@@ -39,25 +42,25 @@ if __name__ == "__main__":
   # ======================================================================================================== #
   # Integrate
   # ======================================================================================================== #
-  # # Loop through RGB-D images and fuse them together
-  # t0_elapse = time.time()
-  # for i in range(n_imgs):
-  #   print("Fusing frame %d/%d"%(i+1, n_imgs))
+  # Loop through RGB-D images and fuse them together
+  t0_elapse = time.time()
+  for i in range(n_imgs):
+    print("Fusing frame %d/%d"%(i+1, n_imgs))
 
-  #   # Read RGB-D image and camera pose
-  #   color_image = cv2.cvtColor(cv2.imread("data/frame-%06d.color.jpg"%(i)), cv2.COLOR_BGR2RGB)
-  #   depth_im = cv2.imread("data/frame-%06d.depth.png"%(i),-1).astype(float)
-  #   depth_im /= 1000.
-  #   depth_im[depth_im == 65.535] = 0
-  #   cam_pose = np.loadtxt("data/frame-%06d.pose.txt"%(i))
+    # Read RGB-D image and camera pose
+    color_image = cv2.cvtColor(cv2.imread("data/frame-%06d.color.jpg"%(i)), cv2.COLOR_BGR2RGB)
+    depth_im = cv2.imread("data/frame-%06d.depth.png"%(i),-1).astype(float)
+    depth_im /= 1000.
+    depth_im[depth_im == 65.535] = 0
+    cam_pose = np.loadtxt("data/frame-%06d.pose.txt"%(i))
 
-  #   # Integrate observation into voxel volume (assume color aligned with depth)
-  #   tsdf_vol.integrate(color_image, depth_im, cam_intr, cam_pose, obs_weight=1.)
+    # Integrate observation into voxel volume (assume color aligned with depth)
+    tsdf_vol.integrate(color_image, depth_im, cam_intr, cam_pose, obs_weight=1.)
 
-  # fps = n_imgs / (time.time() - t0_elapse)
-  # print("Average FPS: {:.2f}".format(fps))
+  fps = n_imgs / (time.time() - t0_elapse)
+  print("Average FPS: {:.2f}".format(fps))
 
-  # # Get mesh from voxel volume and save to disk (can be viewed with Meshlab)
-  # print("Saving to mesh.ply...")
-  # verts, faces, norms, colors = tsdf_vol.get_mesh()
-  # fusion.meshwrite("mesh.ply", verts, faces, norms, colors)
+  # Get mesh from voxel volume and save to disk (can be viewed with Meshlab)
+  print("Saving to mesh.ply...")
+  verts, faces, norms, colors = tsdf_vol.extract_triangle_mesh()
+  fusion.meshwrite("mesh.ply", verts, faces, norms, colors)

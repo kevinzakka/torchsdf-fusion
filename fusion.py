@@ -5,7 +5,6 @@ import numpy as np
 import torch
 
 from skimage import measure
-from ipdb import set_trace
 
 
 class TSDFVolume:
@@ -28,24 +27,25 @@ class TSDFVolume:
       print("[!] No GPU detected. Defaulting to CPU.")
       self.device = torch.device("cpu")
 
-    # define voxel volume parameters
-    self._vol_bnds = torch.from_numpy(vol_bnds).float()
+    # Define voxel volume parameters
+    self._vol_bnds = torch.from_numpy(vol_bnds).float().to(self.device)
     self._voxel_size = float(voxel_size)
     self._sdf_trunc = 5 * self._voxel_size
+    self._const = 256*256
 
-    # adjust volume bounds
+    # Adjust volume bounds
     self._vol_dim = torch.ceil((self._vol_bnds[:, 1] - self._vol_bnds[:, 0]) / self._voxel_size).long()
     self._vol_bnds[:, 1] = self._vol_bnds[:, 0] + (self._vol_dim * self._voxel_size)
     self._vol_origin = self._vol_bnds[:, 0]
     self._num_voxels = torch.prod(self._vol_dim).item()
 
-    # get voxel grid coordinates
+    # Get voxel grid coordinates
     xv, yv, zv = torch.meshgrid(
       torch.arange(0, self._vol_dim[0]),
       torch.arange(0, self._vol_dim[1]),
       torch.arange(0, self._vol_dim[2]),
     )
-    self._vox_coords = torch.stack([xv.flatten(), yv.flatten(), zv.flatten()], dim=1).long()
+    self._vox_coords = torch.stack([xv.flatten(), yv.flatten(), zv.flatten()], dim=1).long().to(self.device)
 
     self.reset()
 
@@ -53,21 +53,77 @@ class TSDFVolume:
     print("[*] num voxels: {:,}".format(self._num_voxels))
 
   def reset(self):
-    self._tsdf_vol = torch.ones(*self._vol_dim)
-    self._weight_vol = torch.zeros(*self._vol_dim)
-    self._color_vol = torch.zeros(*self._vol_dim)
+    self._tsdf_vol = torch.ones(*self._vol_dim).to(self.device)
+    self._weight_vol = torch.zeros(*self._vol_dim).to(self.device)
+    self._color_vol = torch.zeros(*self._vol_dim).to(self.device)
 
   def integrate(self, color_im, depth_im, cam_intr, cam_pose, obs_weight):
-      """Integrate an RGB-D frame into the TSDF volume.
+    """Integrate an RGB-D frame into the TSDF volume.
 
-      Args:
-        color_im (ndarray): An RGB image of shape (H, W, 3).
-        depth_im (ndarray): A depth image of shape (H, W).
-        cam_intr (ndarray): The camera intrinsics matrix of shape (3, 3).
-        cam_pose (ndarray): The camera pose (i.e. extrinsics) of shape (4, 4).
-        obs_weight (float): The weight to assign to the current observation.
-      """
-      pass
+    Args:
+      color_im (ndarray): An RGB image of shape (H, W, 3).
+      depth_im (ndarray): A depth image of shape (H, W).
+      cam_intr (ndarray): The camera intrinsics matrix of shape (3, 3).
+      cam_pose (ndarray): The camera pose (i.e. extrinsics) of shape (4, 4).
+      obs_weight (float): The weight to assign to the current observation.
+    """
+    color_im = torch.from_numpy(color_im).float().to(self.device)
+    depth_im = torch.from_numpy(depth_im).float().to(self.device)
+
+    im_h, im_w = depth_im.shape
+
+    # Fold RGB color image into a single channel image
+    color_im = torch.floor(color_im[..., 2]*self._const + color_im[..., 1]*256 + color_im[..., 0])
+
+    world2cam = torch.from_numpy(np.linalg.inv(cam_pose)).to(self.device)
+
+    # Convert voxel coordinates to world coordinates
+    world_c = self._vol_origin + (self._voxel_size * self._vox_coords)
+
+    # Convert world coordinates to camera coordinates
+    world_c = torch.cat([world_c, torch.ones(len(world_c), 1)], dim=1).double()
+    cam_c = torch.matmul(world2cam, world_c.T).T.float()
+
+    # Convert camera coordinates to pixel coordinates
+    fx, fy = cam_intr[0, 0], cam_intr[1, 1]
+    cx, cy = cam_intr[0, 2], cam_intr[1, 2]
+    pix_z = cam_c[:, 2]
+    pix_x = torch.round((cam_c[:, 0] * fx / cam_c[:, 2]) + cx).long()
+    pix_y = torch.round((cam_c[:, 1] * fy / cam_c[:, 2]) + cy).long()
+
+    # Eliminate pixels outside view frustum
+    valid_pix = (pix_x >= 0) & (pix_x < im_w) & (pix_y >= 0) & (pix_y < im_h) & (pix_z > 0)
+    depth_val = torch.zeros(pix_x.shape).to(self.device)
+    depth_val[valid_pix] = depth_im[pix_y[valid_pix], pix_x[valid_pix]]
+
+    # Integrate tsdf
+    depth_diff = depth_val - pix_z
+    valid_pts = (depth_val > 0) & (depth_diff >= -self._sdf_trunc)
+    dist = torch.min(torch.ones_like(depth_diff).to(self.device), depth_diff / self._sdf_trunc)
+    valid_vox_x = self._vox_coords[valid_pts, 0]
+    valid_vox_y = self._vox_coords[valid_pts, 1]
+    valid_vox_z = self._vox_coords[valid_pts, 2]
+    w_old = self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    tsdf_vals = self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    valid_dist = dist[valid_pts]
+    w_new = w_old + obs_weight
+    tsdf_vol_new = (w_old * tsdf_vals + valid_dist) / w_new
+    self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = tsdf_vol_new
+    self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z] = w_new
+
+    # Integrate color
+    old_color = self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    old_b = torch.floor(old_color / self._const)
+    old_g = torch.floor((old_color-old_b*self._const) / 256)
+    old_r = old_color - old_b*self._const - old_g*256
+    new_color = color_im[pix_y[valid_pts],pix_x[valid_pts]]
+    new_b = torch.floor(new_color / self._const)
+    new_g = torch.floor((new_color - new_b*self._const) / 256)
+    new_r = new_color - new_b*self._const - new_g*256
+    new_b = torch.min(255*torch.ones_like(old_b).to(self.device), torch.round((w_old*old_b + new_b) / w_new))
+    new_g = torch.min(255*torch.ones_like(old_g).to(self.device), torch.round((w_old*old_g + new_g) / w_new))
+    new_r = torch.min(255*torch.ones_like(old_r).to(self.device), torch.round((w_old*old_r + new_r) / w_new))
+    self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z] = new_b*self._const + new_g*256 + new_r
 
   def extract_point_cloud(self):
     """Extract a point cloud from the voxel volume.
@@ -77,6 +133,24 @@ class TSDFVolume:
   def extract_triangle_mesh(self):
     """Extract a triangle mesh from the voxel volume using marching cubes.
     """
+    tsdf_vol = self._tsdf_vol.cpu().numpy()
+    color_vol = self._color_vol.cpu().numpy()
+    vol_origin = self._vol_origin.cpu().numpy()
+
+    # Marchiing cubes
+    verts, faces, norms, vals = measure.marching_cubes_lewiner(tsdf_vol, level=0)
+    verts_ind = np.round(verts).astype(int)
+    verts = verts*self._voxel_size + vol_origin
+
+    # Get vertex colors
+    rgb_vals = color_vol[verts_ind[:, 0], verts_ind[:, 1], verts_ind[:, 2]]
+    colors_b = np.floor(rgb_vals / self._const)
+    colors_g = np.floor((rgb_vals - colors_b*self._const) / 256)
+    colors_r = rgb_vals - colors_b*self._const - colors_g*256
+    colors = np.floor(np.asarray([colors_r, colors_g, colors_b])).T
+    colors = colors.astype(np.uint8)
+
+    return verts, faces, norms, colors
 
   @property
   def sdf_trunc(self):
