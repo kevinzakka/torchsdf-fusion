@@ -5,7 +5,6 @@ import numpy as np
 import torch
 
 from skimage import measure
-from ipdb import set_trace
 
 
 class TSDFVolume:
@@ -103,7 +102,7 @@ class TSDFVolume:
 
     # Integrate tsdf
     depth_diff = depth_val - pix_z[valid_pix]
-    dist = torch.min(torch.ones_like(depth_diff, device=self.device), depth_diff / self._sdf_trunc)
+    dist = torch.clamp(depth_diff / self._sdf_trunc, max=1)
     valid_pts = (depth_val > 0) & (depth_diff >= -self._sdf_trunc)
     valid_vox_x = valid_vox_x[valid_pts]
     valid_vox_y = valid_vox_y[valid_pts]
@@ -126,9 +125,9 @@ class TSDFVolume:
     new_b = torch.floor(new_color / self._const)
     new_g = torch.floor((new_color - new_b*self._const) / 256)
     new_r = new_color - new_b*self._const - new_g*256
-    new_b = torch.min(255*torch.ones_like(old_b).to(self.device), torch.round((w_old*old_b + new_b) / w_new))
-    new_g = torch.min(255*torch.ones_like(old_g).to(self.device), torch.round((w_old*old_g + new_g) / w_new))
-    new_r = torch.min(255*torch.ones_like(old_r).to(self.device), torch.round((w_old*old_r + new_r) / w_new))
+    new_b = torch.clamp(torch.round((w_old*old_b + new_b) / w_new), max=255)
+    new_g = torch.clamp(torch.round((w_old*old_g + new_g) / w_new), max=255)
+    new_r = torch.clamp(torch.round((w_old*old_r + new_r) / w_new), max=255)
     self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z] = new_b*self._const + new_g*256 + new_r
 
   def extract_point_cloud(self):
