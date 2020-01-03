@@ -5,7 +5,7 @@
 const float const_val = 256*256;
 
 // integrate an RGB-D frame into the TSDF volume
-void fusion_integrate(
+std::vector<at::Tensor> fusion_integrate(
   torch::Tensor coords_world,
   torch::Tensor coords_vox,
   torch::Tensor &weight_vol,
@@ -57,7 +57,6 @@ void fusion_integrate(
   auto w_old = weight_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto tsdf_old = tsdf_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto w_new = w_old + obs_weight;
-  auto tsdf_new = (w_old * tsdf_old + valid_dist) / w_new;
   tsdf_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, (w_old * tsdf_old + valid_dist) / w_new);
   weight_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, w_new);
 
@@ -74,6 +73,8 @@ void fusion_integrate(
   auto new_g_ = torch::clamp_max(torch::round((w_old*old_g + new_g) / w_new), 255);
   auto new_r_ = torch::clamp_max(torch::round((w_old*old_r + new_r) / w_new), 255);
   color_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, new_b_*const_val + new_g_*256 + new_r_);
+
+  return {weight_vol, tsdf_vol, color_vol};
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
