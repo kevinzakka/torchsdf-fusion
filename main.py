@@ -8,8 +8,8 @@ import numpy as np
 
 import fusion
 
-# import os
-# os.environ['KMP_DUPLICATE_LIB_OK']='True'
+import os
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 
 if __name__ == "__main__":
@@ -19,7 +19,7 @@ if __name__ == "__main__":
   # frustums in the dataset
   # ======================================================================================================== #
   print("Estimating voxel volume bounds...")
-  n_imgs = 1000
+  n_imgs = 1
   cam_intr = np.loadtxt("data/camera-intrinsics.txt", delimiter=' ')
   vol_bnds = np.zeros((3,2))
   for i in range(n_imgs):
