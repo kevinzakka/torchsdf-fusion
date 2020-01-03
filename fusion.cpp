@@ -2,6 +2,8 @@
 
 #include <vector>
 
+const float const_val = 256*256;
+
 // integrate an RGB-D frame into the TSDF volume
 void fusion_integrate(
   torch::Tensor coords_world,
@@ -17,6 +19,10 @@ void fusion_integrate(
   float im_width,
   float sdf_trunc,
   float obs_weight) {
+  // fold color into single-channel
+  color_im = color_im.narrow(2, 2, 1)*const_val + color_im.narrow(2, 1, 1)*256 + color_im.narrow(2, 0, 1);
+  color_im = torch::floor(color_im).squeeze();
+
   // convert world coordinates to camera coordinates
   auto coords_cam = torch::inverse(extr).mm(coords_world.t()).t();
 
@@ -56,7 +62,6 @@ void fusion_integrate(
   weight_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, w_new);
 
   // integrate color
-  auto const_val = 256*256;
   auto old_color = color_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto old_b = torch::floor(old_color / const_val);
   auto old_g = torch::floor((old_color-old_b*const_val) / 256);

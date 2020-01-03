@@ -80,9 +80,6 @@ class TSDFVolume:
     depth_im = torch.from_numpy(depth_im).float().to(self.device)
     im_h, im_w = depth_im.shape
 
-    # Fold RGB color image into a single channel image
-    color_im = torch.floor(color_im[..., 2]*self._const + color_im[..., 1]*256 + color_im[..., 0])
-
     fusion_cpp.integrate(
       self._world_c,
       self._vox_coords,
