@@ -6,9 +6,9 @@
 void fusion_integrate(
   torch::Tensor coords_world,
   torch::Tensor coords_vox,
-  torch::Tensor& weight_vol,
-  torch::Tensor& color_vol,
-  torch::Tensor& tsdf_vol,
+  torch::Tensor &weight_vol,
+  torch::Tensor &tsdf_vol,
+  torch::Tensor &color_vol,
   torch::Tensor color_im,
   torch::Tensor depth_im,
   torch::Tensor intr,
@@ -36,10 +36,10 @@ void fusion_integrate(
   auto vox_y_valid = coords_vox.narrow(1, 1, 1).squeeze().index(mask_pix);
   auto vox_z_valid = coords_vox.narrow(1, 2, 1).squeeze().index(mask_pix);
 
-  // skip voxels with invalid depth values
+  // skip voxels with invalid depth values or outside truncation
   auto depth_val = depth_im.index({pix_y_valid, pix_x_valid});
   auto depth_diff = depth_val - pix_z_valid;
-  auto dist = torch::clamp_max(depth_diff / sdf_trunc, 1);
+  auto dist = torch::clamp_max(depth_diff / sdf_trunc, 1.0);
   auto mask_vox = (depth_val > 0) * (depth_diff >= -sdf_trunc);
   mask_vox = mask_vox.squeeze();
   vox_x_valid = vox_x_valid.index(mask_vox);
@@ -51,22 +51,24 @@ void fusion_integrate(
   auto w_old = weight_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto tsdf_old = tsdf_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto w_new = w_old + obs_weight;
-  tsdf_vol.index({vox_x_valid, vox_y_valid, vox_z_valid}) = (w_old * tsdf_old + valid_dist) / w_new;
-  weight_vol.index({vox_x_valid, vox_y_valid, vox_z_valid}) = w_new;
+  auto tsdf_new = (w_old * tsdf_old + valid_dist) / w_new;
+  tsdf_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, (w_old * tsdf_old + valid_dist) / w_new);
+  weight_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, w_new);
 
   // integrate color
-  auto color_old = color_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
-  auto b_old = torch::floor(color_old / 256*256);
-  auto g_old = torch::floor((color_old-b_old*256*256) / 256);
-  auto r_old = color_old - b_old*256*256 - g_old*256;
-  auto color_new = color_im.index({pix_y_valid.index(mask_vox), pix_x_valid.index(mask_vox)});
-  auto b_new = torch::floor(color_new / 256*256);
-  auto g_new = torch::floor((color_new - b_new*256*256) / 256);
-  auto r_new = color_new - b_new*256*256 - g_new*256;
-  b_new = torch::clamp_max(torch::round((w_old*b_old + b_new) / w_new), 255);
-  g_new = torch::clamp_max(torch::round((w_old*g_old + g_new) / w_new), 255);
-  r_new = torch::clamp_max(torch::round((w_old*r_old + r_new) / w_new), 255);
-  color_vol.index({vox_x_valid, vox_y_valid, vox_z_valid}) = b_new*256*256 + g_new*256 + r_new;
+  auto const_val = 256*256;
+  auto old_color = color_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
+  auto old_b = torch::floor(old_color / const_val);
+  auto old_g = torch::floor((old_color-old_b*const_val) / 256);
+  auto old_r = old_color - old_b*const_val - old_g*256;
+  auto new_color = color_im.index({pix_y_valid.index(mask_vox), pix_x_valid.index(mask_vox)});
+  auto new_b = torch::floor(new_color / const_val);
+  auto new_g = torch::floor((new_color - new_b*const_val) / 256);
+  auto new_r = new_color - new_b*const_val - new_g*256;
+  auto new_b_ = torch::clamp_max(torch::round((w_old*old_b + new_b) / w_new), 255);
+  auto new_g_ = torch::clamp_max(torch::round((w_old*old_g + new_g) / w_new), 255);
+  auto new_r_ = torch::clamp_max(torch::round((w_old*old_r + new_r) / w_new), 255);
+  color_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, new_b_*const_val + new_g_*256 + new_r_);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

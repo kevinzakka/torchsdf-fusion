@@ -1,14 +1,12 @@
 """Andy's tsdf-fusion in pytorch, because why not.
 """
 
-import time
 import numpy as np
 
 from skimage import measure
 
 import torch
 import fusion_cpp
-
 from ipdb import set_trace
 
 
@@ -67,7 +65,7 @@ class TSDFVolume:
     self._weight_vol = torch.zeros(*self._vol_dim).to(self.device)
     self._color_vol = torch.zeros(*self._vol_dim).to(self.device)
 
-  def integrate(self, color_im, depth_im, cam_intr, cam_pose, obs_weight):
+  def integrate_cpp(self, color_im, depth_im, cam_intr, cam_pose, obs_weight):
     """Integrate an RGB-D frame into the TSDF volume.
 
     Args:
@@ -101,8 +99,6 @@ class TSDFVolume:
       self._sdf_trunc,
       obs_weight,
     )
-
-    set_trace()
 
   def extract_point_cloud(self):
     """Extract a point cloud from the voxel volume.
