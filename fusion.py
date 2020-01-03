@@ -80,9 +80,6 @@ class TSDFVolume:
     depth_im = torch.from_numpy(depth_im).float().to(self.device)
     im_h, im_w = depth_im.shape
 
-    # Fold RGB color image into a single channel image
-    color_im = torch.floor(color_im[..., 2]*self._const + color_im[..., 1]*256 + color_im[..., 0])
-
     fusion_cpp.integrate(
       self._world_c,
       self._vox_coords,
@@ -98,6 +95,74 @@ class TSDFVolume:
       self._sdf_trunc,
       obs_weight,
     )
+
+  @torch.jit.script_method
+  def integrate_jit(self, color_im, depth_im, cam_intr, cam_pose, obs_weight):
+    """Integrate an RGB-D frame into the TSDF volume.
+    Args:
+      color_im (ndarray): An RGB image of shape (H, W, 3).
+      depth_im (ndarray): A depth image of shape (H, W).
+      cam_intr (ndarray): The camera intrinsics matrix of shape (3, 3).
+      cam_pose (ndarray): The camera pose (i.e. extrinsics) of shape (4, 4).
+      obs_weight (float): The weight to assign to the current observation.
+    """
+    cam_intr = torch.from_numpy(cam_intr).float().to(self.device)
+    color_im = torch.from_numpy(color_im).float().to(self.device)
+    depth_im = torch.from_numpy(depth_im).float().to(self.device)
+    im_h, im_w = depth_im.shape
+
+    # Fold RGB color image into a single channel image
+    color_im = torch.floor(color_im[..., 2]*self._const + color_im[..., 1]*256 + color_im[..., 0])
+
+    # Convert world coordinates to camera coordinates
+    world2cam = torch.from_numpy(np.linalg.inv(cam_pose)).to(self.device)
+    cam_c = torch.matmul(world2cam, self._world_c.T).T.float()
+
+    # Convert camera coordinates to pixel coordinates
+    fx, fy = cam_intr[0, 0], cam_intr[1, 1]
+    cx, cy = cam_intr[0, 2], cam_intr[1, 2]
+    pix_z = cam_c[:, 2]
+    pix_x = torch.round((cam_c[:, 0] * fx / cam_c[:, 2]) + cx).long()
+    pix_y = torch.round((cam_c[:, 1] * fy / cam_c[:, 2]) + cy).long()
+
+    # Eliminate pixels outside view frustum
+    valid_pix = (pix_x >= 0) & (pix_x < im_w) & (pix_y >= 0) & (pix_y < im_h) & (pix_z > 0)
+    valid_vox_x = self._vox_coords[valid_pix, 0]
+    valid_vox_y = self._vox_coords[valid_pix, 1]
+    valid_vox_z = self._vox_coords[valid_pix, 2]
+    valid_pix_y = pix_y[valid_pix]
+    valid_pix_x = pix_x[valid_pix]
+    depth_val = depth_im[pix_y[valid_pix], pix_x[valid_pix]]
+
+    # Integrate tsdf
+    depth_diff = depth_val - pix_z[valid_pix]
+    dist = torch.clamp(depth_diff / self._sdf_trunc, max=1)
+    valid_pts = (depth_val > 0) & (depth_diff >= -self._sdf_trunc)
+    valid_vox_x = valid_vox_x[valid_pts]
+    valid_vox_y = valid_vox_y[valid_pts]
+    valid_vox_z = valid_vox_z[valid_pts]
+    valid_pix_y = valid_pix_y[valid_pts]
+    valid_pix_x = valid_pix_x[valid_pts]
+    valid_dist = dist[valid_pts]
+    w_old = self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    tsdf_vals = self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    w_new = w_old + obs_weight
+    self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = (w_old * tsdf_vals + valid_dist) / w_new
+    self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z] = w_new
+
+    # Integrate color
+    old_color = self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    old_b = torch.floor(old_color / self._const)
+    old_g = torch.floor((old_color-old_b*self._const) / 256)
+    old_r = old_color - old_b*self._const - old_g*256
+    new_color = color_im[valid_pix_y, valid_pix_x]
+    new_b = torch.floor(new_color / self._const)
+    new_g = torch.floor((new_color - new_b*self._const) / 256)
+    new_r = new_color - new_b*self._const - new_g*256
+    new_b = torch.clamp(torch.round((w_old*old_b + new_b) / w_new), max=255)
+    new_g = torch.clamp(torch.round((w_old*old_g + new_g) / w_new), max=255)
+    new_r = torch.clamp(torch.round((w_old*old_r + new_r) / w_new), max=255)
+    self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z] = new_b*self._const + new_g*256 + new_r
 
   def extract_point_cloud(self):
     """Extract a point cloud from the voxel volume.
