@@ -7,7 +7,6 @@ from skimage import measure
 
 import torch
 import fusion_cpp
-from ipdb import set_trace
 
 
 class TSDFVolume:
