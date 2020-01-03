@@ -96,27 +96,29 @@ class TSDFVolume:
       obs_weight,
     )
 
-  @torch.jit.script_method
-  def integrate_jit(self, color_im, depth_im, cam_intr, cam_pose, obs_weight):
-    """Integrate an RGB-D frame into the TSDF volume.
-    Args:
-      color_im (ndarray): An RGB image of shape (H, W, 3).
-      depth_im (ndarray): A depth image of shape (H, W).
-      cam_intr (ndarray): The camera intrinsics matrix of shape (3, 3).
-      cam_pose (ndarray): The camera pose (i.e. extrinsics) of shape (4, 4).
-      obs_weight (float): The weight to assign to the current observation.
-    """
-    cam_intr = torch.from_numpy(cam_intr).float().to(self.device)
-    color_im = torch.from_numpy(color_im).float().to(self.device)
-    depth_im = torch.from_numpy(depth_im).float().to(self.device)
-    im_h, im_w = depth_im.shape
-
+  @staticmethod
+  @torch.jit.script
+  def intgrate_jit(
+    tsdf_vol,
+    color_vol,
+    weight_vol,
+    vox_coords,
+    world_c,
+    color_im,
+    depth_im,
+    cam_intr,
+    cam_pose,
+    obs_weight: float,
+    sdf_trunc: float,
+    im_w: int,
+    im_h: int,
+  ):
     # Fold RGB color image into a single channel image
-    color_im = torch.floor(color_im[..., 2]*self._const + color_im[..., 1]*256 + color_im[..., 0])
+    color_im = torch.floor(color_im[..., 2]*256*256 + color_im[..., 1]*256 + color_im[..., 0])
 
     # Convert world coordinates to camera coordinates
-    world2cam = torch.from_numpy(np.linalg.inv(cam_pose)).to(self.device)
-    cam_c = torch.matmul(world2cam, self._world_c.T).T.float()
+    world2cam = torch.inverse(cam_pose)
+    cam_c = torch.matmul(world2cam, world_c.transpose(1, 0)).transpose(1, 0).float()
 
     # Convert camera coordinates to pixel coordinates
     fx, fy = cam_intr[0, 0], cam_intr[1, 1]
@@ -127,42 +129,65 @@ class TSDFVolume:
 
     # Eliminate pixels outside view frustum
     valid_pix = (pix_x >= 0) & (pix_x < im_w) & (pix_y >= 0) & (pix_y < im_h) & (pix_z > 0)
-    valid_vox_x = self._vox_coords[valid_pix, 0]
-    valid_vox_y = self._vox_coords[valid_pix, 1]
-    valid_vox_z = self._vox_coords[valid_pix, 2]
+    valid_vox_x = vox_coords[valid_pix, 0]
+    valid_vox_y = vox_coords[valid_pix, 1]
+    valid_vox_z = vox_coords[valid_pix, 2]
     valid_pix_y = pix_y[valid_pix]
     valid_pix_x = pix_x[valid_pix]
     depth_val = depth_im[pix_y[valid_pix], pix_x[valid_pix]]
 
     # Integrate tsdf
     depth_diff = depth_val - pix_z[valid_pix]
-    dist = torch.clamp(depth_diff / self._sdf_trunc, max=1)
-    valid_pts = (depth_val > 0) & (depth_diff >= -self._sdf_trunc)
+    dist = torch.clamp(depth_diff / sdf_trunc, max=1)
+    valid_pts = (depth_val > 0) & (depth_diff >= -sdf_trunc)
     valid_vox_x = valid_vox_x[valid_pts]
     valid_vox_y = valid_vox_y[valid_pts]
     valid_vox_z = valid_vox_z[valid_pts]
     valid_pix_y = valid_pix_y[valid_pts]
     valid_pix_x = valid_pix_x[valid_pts]
     valid_dist = dist[valid_pts]
-    w_old = self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z]
-    tsdf_vals = self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z]
-    w_new = w_old + obs_weight
-    self._tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = (w_old * tsdf_vals + valid_dist) / w_new
-    self._weight_vol[valid_vox_x, valid_vox_y, valid_vox_z] = w_new
+    w_old = weight_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    tsdf_vals = tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    w_new = w_old + 1
+    tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = (w_old * tsdf_vals + valid_dist) / w_new
+    weight_vol[valid_vox_x, valid_vox_y, valid_vox_z] = w_new
 
     # Integrate color
-    old_color = self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z]
-    old_b = torch.floor(old_color / self._const)
-    old_g = torch.floor((old_color-old_b*self._const) / 256)
-    old_r = old_color - old_b*self._const - old_g*256
+    old_color = color_vol[valid_vox_x, valid_vox_y, valid_vox_z]
+    old_b = torch.floor(old_color / 256*256)
+    old_g = torch.floor((old_color-old_b*256*256) / 256)
+    old_r = old_color - old_b*256*256 - old_g*256
     new_color = color_im[valid_pix_y, valid_pix_x]
-    new_b = torch.floor(new_color / self._const)
-    new_g = torch.floor((new_color - new_b*self._const) / 256)
-    new_r = new_color - new_b*self._const - new_g*256
+    new_b = torch.floor(new_color / 256*256)
+    new_g = torch.floor((new_color - new_b*256*256) / 256)
+    new_r = new_color - new_b*256*256 - new_g*256
     new_b = torch.clamp(torch.round((w_old*old_b + new_b) / w_new), max=255)
     new_g = torch.clamp(torch.round((w_old*old_g + new_g) / w_new), max=255)
     new_r = torch.clamp(torch.round((w_old*old_r + new_r) / w_new), max=255)
-    self._color_vol[valid_vox_x, valid_vox_y, valid_vox_z] = new_b*self._const + new_g*256 + new_r
+    color_vol[valid_vox_x, valid_vox_y, valid_vox_z] = new_b*256*256 + new_g*256 + new_r
+
+    return color_vol, tsdf_vol, weight_vol
+
+  def integrate(self, color_im, depth_im, cam_intr, cam_pose, obs_weight):
+    """Integrate an RGB-D frame into the TSDF volume.
+    Args:
+      color_im (ndarray): An RGB image of shape (H, W, 3).
+      depth_im (ndarray): A depth image of shape (H, W).
+      cam_intr (ndarray): The camera intrinsics matrix of shape (3, 3).
+      cam_pose (ndarray): The camera pose (i.e. extrinsics) of shape (4, 4).
+      obs_weight (float): The weight to assign to the current observation.
+    """
+    cam_pose = torch.from_numpy(cam_pose).float().to(self.device)
+    cam_intr = torch.from_numpy(cam_intr).float().to(self.device)
+    color_im = torch.from_numpy(color_im).float().to(self.device)
+    depth_im = torch.from_numpy(depth_im).float().to(self.device)
+    im_h, im_w = depth_im.shape
+    color_vol, tsdf_vol, weight_vol = self.intgrate_jit(
+      self._tsdf_vol, self._color_vol, self._weight_vol, self._vox_coords, self._world_c,
+      color_im, depth_im, cam_intr, cam_pose, obs_weight, self._sdf_trunc, im_w, im_h)
+    self._tsdf_vol = tsdf_vol
+    self._color_vol = color_vol
+    self._weight_vol = weight_vol
 
   def extract_point_cloud(self):
     """Extract a point cloud from the voxel volume.
