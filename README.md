@@ -16,9 +16,9 @@ python benchmark.py py/cpp/jit
 
 ## Results
 
-| Method          | FPS |
-|-----------------|-----|
-| PyCuda          | 50  |
-| Vanilla PyTorch | 18  |
-| C++ PyTorch     | 25  |
-| JIT PyTorch     | 26  |
+| Method          | FPS | Avg Integration Time |
+|-----------------|-----|----------------------|
+| PyCuda          | 64.45|      0.006|
+| Vanilla PyTorch | 24.77  |    0.031|
+| C++ PyTorch     | 24.71  |    0.031|
+| JIT PyTorch     | 26.01  |    0.029|
