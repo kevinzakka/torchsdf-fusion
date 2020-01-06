@@ -1,6 +1,7 @@
 import argparse
 import time
 
+import open3d as o3d
 import cv2
 import numpy as np
 
@@ -34,7 +35,7 @@ def main(args):
   # frustums in the dataset
   # ======================================================================================================== #
   print("Estimating voxel volume bounds...")
-  n_imgs = 1000
+  n_imgs = 15
   cam_intr = np.loadtxt("data/camera-intrinsics.txt", delimiter=' ')
   vol_bnds = np.zeros((3,2))
   for i in range(n_imgs):
@@ -81,6 +82,10 @@ def main(args):
 
   times = [t*TIME_SCALES[args.scale] for t in times]
   print("Average integration time: {:.3f} {}".format(np.mean(times), args.scale))
+
+  # Extract pointcloud
+  point_cloud = tsdf_vol.extract_point_cloud()
+  fusion.pcwrite("pc.ply", point_cloud)
 
   # Get mesh from voxel volume and save to disk (can be viewed with Meshlab)
   print("Saving to mesh.ply...")

@@ -93,6 +93,29 @@ class TSDFVolume:
     self._tsdf_vol = tsdf_vol
     self._color_vol = color_vol
 
+  def extract_point_cloud(self):
+    """Extract a point cloud from the voxel volume.
+    """
+    tsdf_vol = self._tsdf_vol.cpu().numpy()
+    color_vol = self._color_vol.cpu().numpy()
+    vol_origin = self._vol_origin.cpu().numpy()
+
+    # Marching cubes
+    verts = measure.marching_cubes_lewiner(tsdf_vol, level=0)[0]
+    verts_ind = np.round(verts).astype(int)
+    verts = verts*self._voxel_size + vol_origin
+
+    # Get vertex colors
+    rgb_vals = color_vol[verts_ind[:, 0], verts_ind[:, 1], verts_ind[:, 2]]
+    colors_b = np.floor(rgb_vals / self._const)
+    colors_g = np.floor((rgb_vals - colors_b*self._const) / 256)
+    colors_r = rgb_vals - colors_b*self._const - colors_g*256
+    colors = np.floor(np.asarray([colors_r, colors_g, colors_b])).T
+    colors = colors.astype(np.uint8)
+
+    pc = np.hstack([verts, colors])
+    return pc
+
   def extract_triangle_mesh(self):
     """Extract a triangle mesh from the voxel volume using marching cubes.
     """
@@ -181,3 +204,30 @@ def meshwrite(filename, verts, faces, norms, colors):
     ply_file.write("3 %d %d %d\n"%(faces[i,0], faces[i,1], faces[i,2]))
 
   ply_file.close()
+
+
+def pcwrite(filename, xyzrgb):
+  """Save a point cloud to a polygon .ply file.
+  """
+  xyz = xyzrgb[:, :3]
+  rgb = xyzrgb[:, 3:].astype(np.uint8)
+
+  # Write header
+  ply_file = open(filename,'w')
+  ply_file.write("ply\n")
+  ply_file.write("format ascii 1.0\n")
+  ply_file.write("element vertex %d\n"%(xyz.shape[0]))
+  ply_file.write("property float x\n")
+  ply_file.write("property float y\n")
+  ply_file.write("property float z\n")
+  ply_file.write("property uchar red\n")
+  ply_file.write("property uchar green\n")
+  ply_file.write("property uchar blue\n")
+  ply_file.write("end_header\n")
+
+  # Write vertex list
+  for i in range(xyz.shape[0]):
+    ply_file.write("%f %f %f %d %d %d\n"%(
+      xyz[i, 0], xyz[i, 1], xyz[i, 2],
+      rgb[i, 0], rgb[i, 1], rgb[i, 2],
+    ))

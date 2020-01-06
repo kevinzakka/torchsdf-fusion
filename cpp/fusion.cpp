@@ -5,12 +5,12 @@
 const float const_val = 256*256;
 
 // integrate an RGB-D frame into the TSDF volume
-std::vector<at::Tensor> fusion_integrate(
+std::vector<torch::Tensor> fusion_integrate(
   torch::Tensor coords_world,
   torch::Tensor coords_vox,
-  torch::Tensor &weight_vol,
-  torch::Tensor &tsdf_vol,
-  torch::Tensor &color_vol,
+  torch::Tensor weight_vol,
+  torch::Tensor tsdf_vol,
+  torch::Tensor color_vol,
   torch::Tensor color_im,
   torch::Tensor depth_im,
   torch::Tensor intr,
@@ -57,7 +57,7 @@ std::vector<at::Tensor> fusion_integrate(
   auto w_old = weight_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto tsdf_old = tsdf_vol.index({vox_x_valid, vox_y_valid, vox_z_valid});
   auto w_new = w_old + obs_weight;
-  tsdf_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, (w_old * tsdf_old + valid_dist) / w_new);
+  tsdf_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, (w_old * tsdf_old + obs_weight*valid_dist) / w_new);
   weight_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, w_new);
 
   // integrate color
@@ -69,9 +69,9 @@ std::vector<at::Tensor> fusion_integrate(
   auto new_b = torch::floor(new_color / const_val);
   auto new_g = torch::floor((new_color - new_b*const_val) / 256);
   auto new_r = new_color - new_b*const_val - new_g*256;
-  auto new_b_ = torch::clamp_max(torch::round((w_old*old_b + new_b) / w_new), 255);
-  auto new_g_ = torch::clamp_max(torch::round((w_old*old_g + new_g) / w_new), 255);
-  auto new_r_ = torch::clamp_max(torch::round((w_old*old_r + new_r) / w_new), 255);
+  auto new_b_ = torch::clamp_max(torch::round((w_old*old_b + obs_weight*new_b) / w_new), 255);
+  auto new_g_ = torch::clamp_max(torch::round((w_old*old_g + obs_weight*new_g) / w_new), 255);
+  auto new_r_ = torch::clamp_max(torch::round((w_old*old_r + obs_weight*new_r) / w_new), 255);
   color_vol.index_put_({vox_x_valid, vox_y_valid, vox_z_valid}, new_b_*const_val + new_g_*256 + new_r_);
 
   return {weight_vol, tsdf_vol, color_vol};

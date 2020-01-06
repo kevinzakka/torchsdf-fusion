@@ -54,7 +54,7 @@ def integrate(
   w_old = weight_vol[valid_vox_x, valid_vox_y, valid_vox_z]
   tsdf_vals = tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z]
   w_new = w_old + obs_weight
-  tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = (w_old * tsdf_vals + valid_dist) / w_new
+  tsdf_vol[valid_vox_x, valid_vox_y, valid_vox_z] = (w_old * tsdf_vals + obs_weight*valid_dist) / w_new
   weight_vol[valid_vox_x, valid_vox_y, valid_vox_z] = w_new
 
   # Integrate color
@@ -66,9 +66,9 @@ def integrate(
   new_b = torch.floor(new_color / CONST_VAL)
   new_g = torch.floor((new_color - new_b*CONST_VAL) / 256)
   new_r = new_color - new_b*CONST_VAL - new_g*256
-  new_b = torch.clamp(torch.round((w_old*old_b + new_b) / w_new), max=255)
-  new_g = torch.clamp(torch.round((w_old*old_g + new_g) / w_new), max=255)
-  new_r = torch.clamp(torch.round((w_old*old_r + new_r) / w_new), max=255)
+  new_b = torch.clamp(torch.round((w_old*old_b + obs_weight*new_b) / w_new), max=255)
+  new_g = torch.clamp(torch.round((w_old*old_g + obs_weight*new_g) / w_new), max=255)
+  new_r = torch.clamp(torch.round((w_old*old_r + obs_weight*new_r) / w_new), max=255)
   color_vol[valid_vox_x, valid_vox_y, valid_vox_z] = new_b*CONST_VAL + new_g*256 + new_r
 
   return weight_vol, tsdf_vol, color_vol
